@@ -176,9 +176,16 @@ book_example = sc.parallelize([
     (6, 7),
     (7, 8)
 ])
-# After approach, we expect [(8, 6), (5, 1), (4, 1), (3, 1), (2, 1), (7, 6)]
+# After approach, we expect [(8, 6), (5, 1), (4, 1), (3, 1), (2, 1), (7, 6)], newCouples = [4,9,4,0]
 # Number of components is, output of connected_components should be: [(1, [5, 4, 3, 2]), (6, [8, 7])]
 
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Optimisations
+# MAGIC
+# MAGIC To do
 
 # COMMAND ----------
 
