@@ -101,72 +101,71 @@ from pyspark import RDD
 Defining accumulator
 '''
 
+class NaiveCFF:
+    def cff_iterate(rdd: RDD) -> RDD:
+        """
+        Arguments:
+            rdd: ...
 
-def cff_iterate(rdd: RDD) -> RDD:
-    """
-    Arguments:
-        rdd: ...
+        Computes the naive implementation of cff-iterate
+        """
 
-    Computes the naive implementation of cff-iterate
-    """
-
-    newPairCounter = sc.accumulator(0)
-    
-    def cff_map(x):
-        res = [(x[0], x[1]), (x[1], x[0])]
-        return res
-    
-    
-    
-    def cff_reduce(x):
-        res = []
-        key = x[0]
-        values = list(x[1])
-        minValue = min(values)
-        print("success")
-        if (key <= minValue):
-            return res
-        else:
-            res.append((key, minValue))
-            for v in values:
-                if v == minValue:
-                    continue
-                else:
-                    res.append((v, minValue))
-                    newPairCounter.add(1)
-        return res
-    
-    return (rdd.flatMap(cff_map).groupByKey().flatMap(cff_reduce).distinct(), newPairCounter)
-
-def cff_run(rdd: RDD, iterate=cff_iterate):
-    """
-    Arguments:
-        ...
-    
-    Applies the logic defined in the iterate callback until the number of pairs is 0
-    """
-    new_rdd, pairCount = iterate(rdd)
-
-    #We call an action to execute transformations, and thus compute pairCount
-    new_rdd.first()
-    newPairsByIteration = [pairCount.value]
-    while not (pairCount.value == 0):
-        new_rdd, pairCount = iterate(new_rdd)
-        new_rdd.collect()
-        newPairsByIteration.append(pairCount.value)
-    
-    return (new_rdd, newPairsByIteration)
-
-def connected_components(rdd: RDD):
-    """
-    Arguments:
-        rdd: PythonRDD after cff_run transformation
+        newPairCounter = sc.accumulator(0)
         
-    Returns: All connected components, as a list of (componentID, componentNodes (iterable))
-    """
-    new_rdd = rdd.map(lambda x: (x[1],x[0])).groupByKey()
-    connectedComponentsCount = new_rdd.count()
-    return new_rdd
+        def cff_map(x):
+            res = [(x[0], x[1]), (x[1], x[0])]
+            return res
+        
+        
+        
+        def cff_reduce(x):
+            res = []
+            key = x[0]
+            values = list(x[1])
+            minValue = min(values)
+            if (key <= minValue):
+                return res
+            else:
+                res.append((key, minValue))
+                for v in values:
+                    if v == minValue:
+                        continue
+                    else:
+                        res.append((v, minValue))
+                        newPairCounter.add(1)
+            return res
+        
+        return (rdd.flatMap(cff_map).groupByKey().flatMap(cff_reduce).distinct(), newPairCounter)
+
+    def cff_run(rdd: RDD, iterate=cff_iterate):
+        """
+        Arguments:
+            ...
+        
+        Applies the logic defined in the iterate callback until the number of pairs is 0
+        """
+        new_rdd, pairCount = iterate(rdd)
+
+        #We call an action to execute transformations, and thus compute pairCount
+        new_rdd.first()
+        newPairsByIteration = [pairCount.value]
+        while not (pairCount.value == 0):
+            new_rdd, pairCount = iterate(new_rdd)
+            new_rdd.collect()
+            newPairsByIteration.append(pairCount.value)
+        
+        return (new_rdd, newPairsByIteration)
+
+    def connected_components(rdd: RDD):
+        """
+        Arguments:
+            rdd: PythonRDD after cff_run transformation
+            
+        Returns: All connected components, as a list of (componentID, componentNodes (iterable))
+        """
+        new_rdd = rdd.map(lambda x: (x[1],x[0])).groupByKey()
+        connectedComponentsCount = new_rdd.count()
+        return new_rdd
 
 book_example = sc.parallelize([
     (1, 2),
@@ -178,14 +177,94 @@ book_example = sc.parallelize([
 ])
 # After approach, we expect [(8, 6), (5, 1), (4, 1), (3, 1), (2, 1), (7, 6)], newCouples = [4,9,4,0]
 # Number of components is, output of connected_components should be: [(1, [5, 4, 3, 2]), (6, [8, 7])]
+NaiveCFF.connected_components(NaiveCFF.cff_run(book_example)[0]).mapValues(list)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Optimizations
+# MAGIC
+# MAGIC This first implementation can be optimized by adding second-order sorting. In fact, in the reduce function of cff_iterate, we need to traverse the whole array of associated values to find the minimum. If this array was sorted in ascending order during the groupBy transformation, it would be sufficient to just take the first element of the array.
+
+# COMMAND ----------
+
+"""
+This works, but needs to be tested to see if it bring any improvement to speed
+"""
+from heapq import merge
+
+class SortingCFF:
+    def cff_iterate(rdd: RDD) -> RDD:
+        """
+        Arguments:
+            rdd: ...
+
+        Computes the naive implementation of cff-iterate
+        """
+
+        newPairCounter = sc.accumulator(0)
+        
+        def cff_map(x):
+            res = [(x[0], [x[1]]), (x[1], [x[0]])]
+            return res
+        
+        
+        
+        def cff_sortByKey(x,y):
+            return list(merge(x,y))
+        
+        def cff_reduce(x):
+            res = []
+            key = x[0]
+            values = x[1]
+            minValue = values[0]
+            if (key <= minValue):
+                return res
+            else:
+                res.append((key, minValue))
+                for v in values[1:]:
+                    res.append((v, minValue))
+                    newPairCounter.add(1)
+            return res
+        return (rdd.flatMap(cff_map).reduceByKey(cff_sortByKey).flatMap(cff_reduce), newPairCounter)
+
+    def cff_run(rdd: RDD, iterate=cff_iterate):
+        """
+        Arguments:
+            ...
+        
+        Applies the logic defined in the iterate callback until the number of pairs is 0
+        """
+        new_rdd, pairCount = iterate(rdd)
+
+        #We call an action to execute transformations, and thus compute pairCount
+        new_rdd.first()
+        newPairsByIteration = [pairCount.value]
+        while not (pairCount.value == 0):
+            new_rdd, pairCount = iterate(new_rdd)
+            new_rdd.collect()
+            newPairsByIteration.append(pairCount.value)
+        
+        return (new_rdd, newPairsByIteration)
+
+    def connected_components(rdd: RDD):
+        """
+        Arguments:
+            rdd: PythonRDD after cff_run transformation
+            
+        Returns: All connected components, as a list of (componentID, componentNodes (iterable))
+        """
+        new_rdd = rdd.map(lambda x: (x[1],x[0])).groupByKey()
+        connectedComponentsCount = new_rdd.count()
+        return new_rdd
+
+SortingCFF.connected_components(SortingCFF.cff_run(book_example)[0]).mapValues(list).collect()
 
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Optimisations
-# MAGIC
-# MAGIC To do
+# MAGIC ### Testing custom partitioning - next step
 
 # COMMAND ----------
 
@@ -195,6 +274,10 @@ book_example = sc.parallelize([
 # MAGIC [1] https://www.geeksforgeeks.org/applications-of-graph-data-structure/
 # MAGIC
 # MAGIC [2] https://www.cse.unr.edu/~hkardes/pdfs/ccf.pdf 
+
+# COMMAND ----------
+
+
 
 # COMMAND ----------
 
