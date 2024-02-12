@@ -97,21 +97,28 @@
 
 from pyspark import RDD
 
+'''
+Defining accumulator
+'''
+
+
 def cff_iterate(rdd: RDD) -> RDD:
-    """"
+    """
     Arguments:
         rdd: ...
 
     Computes the naive implementation of cff-iterate
     """
+
+    newPairCounter = sc.accumulator(0)
+    
     def cff_map(x):
-        res = [(x[0],x[1]),(x[1],x[0])]
+        res = [(x[0], x[1]), (x[1], x[0])]
         return res
     
-    newPairCounter = sc.accumulator(0)
-
+    
+    
     def cff_reduce(x):
-        
         res = []
         key = x[0]
         values = list(x[1])
@@ -120,34 +127,57 @@ def cff_iterate(rdd: RDD) -> RDD:
         if (key <= minValue):
             return res
         else:
-            res.append((key,minValue))
+            res.append((key, minValue))
             for v in values:
-                if v==minValue:
+                if v == minValue:
                     continue
                 else:
-                    res.append((v,minValue))
+                    res.append((v, minValue))
                     newPairCounter.add(1)
         return res
-    return (rdd.flatMap(cff_map).groupByKey().flatMap(cff_reduce).distinct(),newPairCounter)
+    
+    return (rdd.flatMap(cff_map).groupByKey().flatMap(cff_reduce).distinct(), newPairCounter)
+
+def cff_run(rdd: RDD, iterate=cff_iterate):
+    """
+    Arguments:
+        ...
+    
+    Applies the logic defined in the iterate callback until the number of pairs is 0
+    """
+    new_rdd, pairCount = iterate(rdd)
+
+    #We call an action to execute transformations, and thus compute pairCount
+    new_rdd.first()
+    newPairsByIteration = [pairCount.value]
+    while not (pairCount.value == 0):
+        new_rdd, pairCount = iterate(new_rdd)
+        new_rdd.collect()
+        newPairsByIteration.append(pairCount.value)
+    
+    return (new_rdd, newPairsByIteration)
+
+def connected_components(rdd: RDD):
+    """
+    Arguments:
+        rdd: PythonRDD after cff_run transformation
+        
+    Returns: All connected components, as a list of (componentID, componentNodes (iterable))
+    """
+    new_rdd = rdd.map(lambda x: (x[1],x[0])).groupByKey()
+    connectedComponentsCount = new_rdd.count()
+    return new_rdd
 
 book_example = sc.parallelize([
-    (1,2),
-    (2,3),
-    (2,4),
-    (4,5),
-    (6,7),
-    (7,8)
+    (1, 2),
+    (2, 3),
+    (2, 4),
+    (4, 5),
+    (6, 7),
+    (7, 8)
 ])
-
-new_cff, newPairCount = cff_iterate(book_example)
-new_cff.collect()
-print(newPairCount)
-while newPairCount!=0:
-    new_cff, newPairCount = cff_iterate(new_cff)
-    new_cff.collect()
-    print(newPairCount)
-
-
+# After approach, we expect [(8, 6), (5, 1), (4, 1), (3, 1), (2, 1), (7, 6)]
+# Number of components is, output of connected_components should be: [(1, [5, 4, 3, 2]), (6, [8, 7])]
 
 
 # COMMAND ----------
