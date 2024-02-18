@@ -164,7 +164,6 @@ class NaiveCFF:
         Returns: All connected components, as a list of (componentID, componentNodes (iterable))
         """
         new_rdd = rdd.map(lambda x: (x[1],x[0])).groupByKey()
-        connectedComponentsCount = new_rdd.count()
         return new_rdd
 
 book_example = sc.parallelize([
@@ -177,7 +176,7 @@ book_example = sc.parallelize([
 ])
 # After approach, we expect [(8, 6), (5, 1), (4, 1), (3, 1), (2, 1), (7, 6)], newCouples = [4,9,4,0]
 # Number of components is, output of connected_components should be: [(1, [5, 4, 3, 2]), (6, [8, 7])]
-NaiveCFF.connected_components(NaiveCFF.cff_run(book_example)[0]).mapValues(list)
+NaiveCFF.connected_components(NaiveCFF.cff_run(book_example)[0]).mapValues(list).collect()
 
 # COMMAND ----------
 
@@ -265,6 +264,85 @@ SortingCFF.connected_components(SortingCFF.cff_run(book_example)[0]).mapValues(l
 
 # MAGIC %md
 # MAGIC ### Testing custom partitioning - next step
+# MAGIC
+# MAGIC In this section, we will test the execution of both algorithms against the same graph that was used in the connected compontent finder paper. We will first start by importing our dataset that can be found on here:
+# MAGIC [Link](https://snap.stanford.edu/data/web-Google.html)
+# MAGIC
+
+# COMMAND ----------
+
+# Because we saved the data in a table in databricks, we use the following command to retrieve it
+# You should adapt this command, such as the file path, to your method of storing the graph
+raw_result = spark.sql("SELECT * FROM bigdata_project.my_schema.web_google_without_headers").rdd
+
+# Here, we transform the data so that it has the form of key value pairs
+def convert_to_key_value(x):
+    after_split = x.value.split("\t")
+    return (int(after_split[0]),int(after_split[1]))
+
+rdd = raw_result.map(convert_to_key_value).persist()
+
+# Now, we need to test if this graph is undirected, and if it stores both directions or just single directions
+def determine_graph_nature(input_rdd):
+    """
+    Arguments:
+        input_rdd: the initial rdd
+    Output:
+        inverse_rdd_initial_size: the initial size of the inverse rdd = the initial size of the rdd
+        inverse_rdd_sub_size: Size of the rdd resulting from the subtraction of the input_rdd from the inverse_rdd
+    """
+    inverse_rdd = input_rdd.map(lambda x: (x[1],x[0]))
+    inverse_rdd_initial_size = inverse_rdd.count()
+    inverse_rdd_sub_size = inverse_rdd.subtract(input_rdd).count()
+    print(inverse_rdd_initial_size,inverse_rdd_sub_size)
+
+determine_graph_nature(rdd)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC By subtracting the initial rdd from the inverted_rdd, we can get insights into the graph: is it undirected or directed, the notation used, etc.
+# MAGIC For example, lets say that we were dealing with an undirected graph. In that case, we can have 2 ways for saving the graph:
+# MAGIC  1. Either we save both directions: Say there is an edge between x and y, we would store both (x,y) and (y,x) into our file
+# MAGIC  2. We store the edge only once, with the understanding that the edge is symetrical. In our previous example, we would store only (x,y) or (y,x)
+# MAGIC
+# MAGIC If we had case 1, subtracting the inverted rdd from the initial rdd should give us an empty rdd, since both datasets have the same couples.
+# MAGIC If we had case 2, there should be no intersection between the initial rdd and the inverted rdd.
+# MAGIC
+# MAGIC However, with our run we can see that neither is the case: the initial rdd (and consequently, the inverted rdd) has 5 105 039 edges. When we subtract the initial rdd from the inverted rdd, we get 3 539 063. This means that the graph is directed. However, finding connected components is a problem used for undirected graphs. Thus, our first action will be to convert the initial rdd into an undirected graph. We will use the saving method described in case 2, since it makes more sense to save a graph in such a manner. The rule will be the following: provided there is an edge between x and y, we will save the couple (x,y) in our rdd, such that x < y.
+
+# COMMAND ----------
+
+def undirected_graph_map(x):
+    """
+    Input:
+        x: (key, value) pair representing an edge from key to value
+    Output:
+        (smallerValue, biggerValue), the undirected edge
+    """
+    smallerValue = min(x[0],x[1])
+    biggerValue = max(x[0],x[1])
+    return (smallerValue, biggerValue)
+
+# After applying the map function, we call distinct because bi-directional edges would be saved as (x,y) and (y,x)
+# The undirected graph map would thus produce duplicates.
+web_undirected_graph = rdd.map(undirected_graph_map).distinct().persist()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC We now have our undirected graph, that we will use for our experimentations
+
+# COMMAND ----------
+
+naive_result = NaiveCFF.connected_components(NaiveCFF.cff_run(web_undirected_graph)[0]).persist()
+naive_result.count()
+
+# COMMAND ----------
+
+# This command doesn't work, need to revisit optimisation
+sorted_result = SortingCFF.connected_components(SortingCFF.cff_run(web_undirected_graph)[0]).persist()
+sorted_result.count()
 
 # COMMAND ----------
 
