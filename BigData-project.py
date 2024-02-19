@@ -181,8 +181,8 @@ class NaiveCCF:
 
         return (rdd.flatMap(self._ccf_map)
                 .groupByKey()
-                .flatMap(self._ccf_reduce(newPairCounter))
-                .distinct(), newPairCounter)
+                .flatMap(self._ccf_reduce(newPairCounter)) 
+                .distinct(), newPairCounter) #.distinct() is used for deduplication
         
     def ccf_run(self):
         """
@@ -236,7 +236,6 @@ class SortingCCF:
             key = x[0]
             values = list(x[1])
             minValue = values[0]
-            trueMin = min(values)
             if key <= minValue:
                 return res
             else:
@@ -277,7 +276,7 @@ class SortingCCF:
 
         return (rdd.flatMap(self._ccf_map)
                 .partitionBy(self.numPartitions)
-                .mapPartitions(self._custom_group_by)
+                .mapPartitions(self._custom_group_by) # mapPartitions lets us apply custom logic to each partition, it doesn't trigger a shuffle and sort. Here, we get a groupBy with sorting logic
                 .flatMap(self._ccf_reduce(newPairCounter))
                 .distinct(), newPairCounter)
         
@@ -293,8 +292,7 @@ class SortingCCF:
             newPairsByIteration.append(pairCount.value)
         
         return (new_rdd, newPairsByIteration)
-        
-        return (new_rdd, newPairsByIteration)
+
 
 executor = SortingCCF(rdd=book_example)
 executor.ccf_run()[0].collect()
@@ -376,32 +374,48 @@ web_undirected_graph = rdd.map(undirected_graph_map).distinct().persist()
 
 # COMMAND ----------
 
-naive_executor = NaiveCCF(rdd=web_undirected_graph)
-naive_result = naive_executor.ccf_run()
-print(naive_result[1])
-print(connected_components(naive_result[0]).count())
+import time
 
-# Result
-# Number of iterations: 8
-# New couples found for each iteration: [7223780, 4758451, 3278772, 3888454, 1905323, 86783, 1318, 0]
-# Number of connected components = 2746
-# Command took 1.70 minutes
+def measure_execution_time(executor):
+    start_time = time.time_ns()
+    result = executor.ccf_run()
+    end_time = time.time_ns()
+
+    #elapsed time in seconds
+    elapsed_time = (end_time-start_time)/ 1e9
+    print(f"Execution time: {elapsed_time:.2f} seconds")
+    print(f"Number of iterations: {len(result[1])}")
+    print(f"New couples per iteration: {result[1]}")
+    print(f"Number of connected components: {connected_components(result[0]).count()}")
+
 
 # COMMAND ----------
 
 """
-Executing the sorted_executor with deduplication
+This block measures the execution time and gives the result of NaiveCCF
+"""
+naive_executor = NaiveCCF(rdd=web_undirected_graph)
+measure_execution_time(naive_executor)
+
+# Results
+# Execution time: 99.11 seconds
+# Number of iterations: 8
+# New couples per iteration: [7223780, 4758451, 3278772, 3888454, 1905323, 86783, 1318, 0]
+# Number of connected components: 2746
+
+# COMMAND ----------
+
+"""
+This block measures the execution time and gives the result of SortingCCF
 """
 sorted_executor = SortingCCF(rdd=web_undirected_graph)
-sorted_result = sorted_executor.run_dedup()
-print(sorted_result[1])
-print(connected_components(sorted_result[0]).count())
+measure_execution_time(sorted_executor)
 
-# Result
+# Results
+# Execution time: 88.93 seconds
 # Number of iterations: 8
-# Couples found for each iteration: [7223780, 4758451, 3278772, 3888454, 1905323, 86783, 1318, 0]
-# Number of connected components = 2746
-# Command took 1.49 minutes
+# New couples per iteration: [7223780, 4758451, 3278772, 3888454, 1905323, 86783, 1318, 0]
+# Number of connected components: 2746
 
 # COMMAND ----------
 
