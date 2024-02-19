@@ -117,6 +117,7 @@ book_example = sc.parallelize([
     (6, 7),
     (7, 8)
 ], NUM_PARTITIONS)
+
 # After approach, we expect [(8, 6), (5, 1), (4, 1), (3, 1), (2, 1), (7, 6)], newCouples = [4,9,4,0]
 # Number of components is 2, output of the connected_components function should be: [(1, [5, 4, 3, 2]), (6, [8, 7])]
 
@@ -129,9 +130,10 @@ def connected_components(rdd: RDD) -> RDD:
         This function takes in the resulting rdd after the CCF algorithm has converged. It reverses the key and value pairs of the rdd and then returns the rdd grouped by keys.
         As a result, the returned rdd is the collection of (componentID, list [componentNodes]), which together make up the whole connected component. From here, we can easily get the
         number of connected components in the graph by running the action .count(), or we can print all nodes in the connected component, count the number of nodes per component, ...
-        
+
         Arguments:
-            rdd: RDD after cff_run transformation
+            rdd: RDD 
+                RDD that was obtained after running cff_run transformation
             
         Returns:
             new_rdd: RDDAll connected components, as a list of (componentID, componentNodes (iterable))
@@ -145,15 +147,38 @@ def connected_components(rdd: RDD) -> RDD:
 NaiveCCF with self
 """
 class NaiveCCF:
+    """
+    A class used to represent the unoptimized connected component finder. The class
+    takes as argument the rdd on which we would like to the CCF transformation
+
+    Arguments:
+        rdd: RDD
+            Initial rdd that represents the undirected graph as a collection of edges
+    
+    Methods:
+        ccf_run(): Runs ccf until convergence and returns the result
+    """
 
     def __init__(self, rdd:RDD):
+        """
+        Initializes the NaiveCCF object
+        Arguments:
+            rdd: RDD
+                Initial rdd to be transformed
+        """
         self.rdd = rdd
         self.numPartitions = rdd.getNumPartitions()
 
     @staticmethod
     def _ccf_map(x):
         """
-        Description
+        The equivalent of the map function described in CCF. This function will be run with a flatMap to produce same result as pseudo-code
+        Arguments:
+            x: (key, value)
+                pairs representing connected nodes
+
+        Returns:
+            res: [(key,value),(value,key)]
         """
         res = [(x[0], x[1]), (x[1], x[0])]
         return res
@@ -161,13 +186,21 @@ class NaiveCCF:
     @staticmethod
     def _ccf_reduce(newPairCounter):
         """
-        Description
+        The equivalent of the reduce function described in CCF. The function will be run with a flatMap to produce same result as pseudo_code
+
+        Arguments:
+            newPairCounter: accumulator, used for counting new pairs found in reduce
+        
+        Returns:
+            reduce_: function
+                The reduce function, which is the implementation of reduce pseudo-code. We return a function because with this method, we can pass
+                in the accumulator from _ccf_iterate, that is going to be used by reduce_ to count the number of new pairs. 
         """
         def reduce_(x):
             res = []
             key = x[0]
             values = list(x[1])
-            minValue = min(values)
+            minValue = min(values) # We need to iterate over all values to find the minimum
             if (key <= minValue):
                 return res
             else:
@@ -183,20 +216,39 @@ class NaiveCCF:
     
     def _ccf_iterate(self, rdd=None):
         """
-        Function description
+        This function computes a single iteration of the CCF algorithm, and corresponds to CCF_iterate in pseudo-code
+        If rdd=None, than we are in the first iteration of the algorithm - the function takes the initial rdd saved in self.rdd
+        For all subsequent iterations, ccf_run will pass the result from the previous iteration to the _ccf_iterate function.
+
+        Arguments:
+            rdd: RDD - optional
+                The resulting rdd from the previous _ccf_iterate transformation. Defaults to initial rdd (in self.rdd)
+        
+        Returns:
+            (new rdd: RDD, newPairCounter: accumulator)
+                Both the new rdd, as well as the accumulator containing the number of new pairs founds
         """
+
         newPairCounter = sc.accumulator(0)
         if rdd is None:
             rdd = self.rdd
 
         return (rdd.flatMap(self._ccf_map)
-                .groupByKey()
+                .groupByKey() # We use group by key so that the following .flatMap() can receive same input as a reduce function in Hadoop after Shuffle and Sort
                 .flatMap(self._ccf_reduce(newPairCounter)) 
                 .distinct(), newPairCounter) #.distinct() is used for deduplication
         
     def ccf_run(self):
         """
-        Function description
+        This is the function that is called by the end-user to execute connected component finder transformation.
+        The function will keep calling _ccf_iterate until convergence, meaning the number of new pairs is 0
+        The function will also save a history of the number of new couples that was found in each iteration. This isn't mandatory in CCF,
+        but is useful if we want to check that our function has the correct behavior.
+
+        Returns:
+            (new_rdd: RDD, newPairsByIteration: list[int])
+                new_rdd contains the result of running CCF against the RDD passed in during initialization
+                newPairsByIteration contains the number of new pairs found per iteration
         """
         new_rdd, pairCount = self._ccf_iterate()
 
@@ -224,16 +276,31 @@ class SortingCCF:
     
     @staticmethod
     def _ccf_map(x):
+        """
+        The equivalent of the map function described in CCF. This function will be run with a flatMap to produce same result as pseudo-code
+        Arguments:
+            x: (key, value)
+                pairs representing connected nodes
+
+        Returns:
+            res: [(key,value),(value,key)]
+        """
+
         res = [(x[0], x[1]), (x[1], x[0])]
         return res
     
     @staticmethod
     def _ccf_reduce(newPairCounter):
         """
+        The equivalent of the reduce function described in CCF. The function will be run with a flatMap to produce same result as pseudo_code
+
         Arguments:
-            newPairCounter: accumulator
+            newPairCounter: accumulator, used for counting new pairs found in reduce
+        
         Returns:
-            reduce function
+            reduce_: function
+                The reduce function, which is the implementation of reduce pseudo-code. We return a function because with this method, we can pass
+                in the accumulator from _ccf_iterate, that is going to be used by reduce_ to count the number of new pairs. 
         """
         def reduce_(x):
             res = []
@@ -254,10 +321,14 @@ class SortingCCF:
     @staticmethod
     def _custom_group_by(rdd_partition):
         """
-        Argumets:
-            rdd_partition: Every partition of the rdd
-        Returns:
-            The pair (key, list of [values]), [values] is sorted
+        This function is used to replace the groupByKey() in the native implementation
+        Instead, we will run this function knowing that the RDD has been repartitioned, which means all (key,value) pairs that have the same key are in the same partition
+        In our dictionary, we keep a mapping between each key and their associated values (saved in a set)
+        After we have iterated over the whole partition, we will emit all keys and the sorted list of all corresponding values
+
+        Arguments:
+            rdd_partition
+                A single partition of the rdd, that containes all pairs with the same key
         """
         grouped_key_values = dict()
         for key, value in rdd_partition:
@@ -265,33 +336,51 @@ class SortingCCF:
                 grouped_key_values[key] = set()
             grouped_key_values[key].add(value)
         for key, values in grouped_key_values.items():
-            yield (key, sorted(values))
+            yield (key, sorted(values)) # This is the equivalent of emitting, or doing a sort of "multiple returns"
     
-    def _ccf_iterate_dedup(self, rdd=None):
+    def _ccf_iterate(self, rdd=None):
         """
-        Arguments:
-            rdd: ...
+        This function computes a single iteration of the CCF algorithm, and corresponds to CCF_iterate in pseudo-code
+        If rdd=None, than we are in the first iteration of the algorithm - the function takes the initial rdd saved in self.rdd
+        For all subsequent iterations, ccf_run will pass the result from the previous iteration to the _ccf_iterate function.
 
-        Computes the naive implementation of cff-iterate
+        Arguments:
+            rdd: RDD - optional
+                The resulting rdd from the previous _ccf_iterate transformation. Defaults to initial rdd (in self.rdd)
+        
+        Returns:
+            (new rdd: RDD, newPairCounter: accumulator)
         """
         newPairCounter = sc.accumulator(0)
         if rdd is None:
             rdd = self.rdd
 
         return (rdd.flatMap(self._ccf_map)
-                .partitionBy(self.numPartitions)
-                .mapPartitions(self._custom_group_by) # mapPartitions lets us apply custom logic to each partition, it doesn't trigger a shuffle and sort. Here, we get a groupBy with sorting logic
+                .partitionBy(self.numPartitions) # partitionBy shuffles the data. By default, it applies the portable_hash on the keys, which means that all the couples with the same key will be in the same partition
+                .mapPartitions(self._custom_group_by) # mapPartitions lets us apply custom logic to each partition, it doesn't trigger a shuffle and sort. Here, we do a group by with sorting logic on each partition
                 .flatMap(self._ccf_reduce(newPairCounter))
                 .distinct(), newPairCounter)
         
     def ccf_run(self):
-        new_rdd, pairCount = self._ccf_iterate_dedup()
+        """
+        This is the function that is called by the end-user to execute connected component finder transformation.
+        The function will keep calling _ccf_iterate until convergence, meaning the number of new pairs is 0
+        The function will also save a history of the number of new couples that was found in each iteration. This isn't mandatory in CCF,
+        but is useful if we want to check that our function has the correct behavior.
+
+        Returns:
+            (new_rdd: RDD, newPairsByIteration: list[int])
+                new_rdd contains the result of running CCF against the RDD passed in during initialization
+                newPairsByIteration contains the number of new pairs found per iteration
+        """
+
+        new_rdd, pairCount = self._ccf_iterate()
 
         # We call an action to execute transformations, and thus compute pairCount
         new_rdd.first()
         newPairsByIteration = [pairCount.value]
         while pairCount.value != 0:
-            new_rdd, pairCount = self._ccf_iterate_dedup(rdd=new_rdd)
+            new_rdd, pairCount = self._ccf_iterate(rdd=new_rdd)
             new_rdd.first()
             newPairsByIteration.append(pairCount.value)
         
@@ -330,12 +419,12 @@ rdd = raw_result.map(convert_to_key_value).persist()
 # Now, we need to test if this graph is undirected, and if it stores both directions or just single directions
 def determine_graph_nature(input_rdd):
     """
+    This function gives us the information we need to determine if input_rdd is undirected or not
+    Simply put, if we have inverse_rdd_initial_size = inverse_rdd_sub_size, we have an undirected graph in correct forlat
+    if inverse_rdd_sub_size = 0, we have an undirected graph that saves both directions: (x,y) and (y,x)
+    else, we have a directed graph
     Arguments:
         input_rdd: the initial rdd
-
-    Retuns:
-        inverse_rdd_initial_size: the initial size of the inverse rdd = the initial size of the rdd
-        inverse_rdd_sub_size: Size of the rdd resulting from the subtraction of the input_rdd from the inverse_rdd
     """
     inverse_rdd = input_rdd.map(lambda x: (x[1],x[0]))
     inverse_rdd_initial_size = inverse_rdd.count()
@@ -361,6 +450,8 @@ determine_graph_nature(rdd)
 
 def undirected_graph_map(x):
     """
+    This functions transforms the directed graph to an undirected graph, by setting the convention such that, when there is an edge between to nodes,
+    it will always be saved as the (smallerNodeId, biggerNodeId) couple
     Input:
         x: (key, value) pair representing an edge from key to value
     Output:
@@ -435,8 +526,29 @@ measure_execution_time(sorted_executor)
 
 # COMMAND ----------
 
+"""
+Here we are executing the CCF on the directed graph we had in the beginning, before transforming it.
+We can see that the algorithm convergres without problem, and even in the same number of iterations.
+However, the number of newFoundPairs is bigger after the first iteration compared to the rest, but the others
+are the same. This is because the first iteration didn't go through deduplucation before arriving to the reducer
+"""
+naive_executor_directed = NaiveCCF(rdd=rdd)
+measure_execution_time(naive_executor_directed)
+
+# COMMAND ----------
+
+""" Same idea with our more efficient implementation of CCF.
+However, this time, we can see that the algorithm even has the same number of pairs for every iteration just like the undirected graph
+This is explained because, in our custom group by, we use sets to save values associated to a key. Sets keep unique records, so we introduced 
+a deduplication effect in the intermediary step between the mapper and reducer"""
+
+sorting_executor_directed = SortingCCF(rdd=rdd)
+measure_execution_time(sorting_executor_directed)
+
+# COMMAND ----------
+
 # MAGIC %md
-# MAGIC We obtained these results by running the code on a single node with 14 GB of Unified memory and 4 cores (which is why we made the choice for 4 partitions)
+# MAGIC We obtained these results by running the code on a single node with 14 GB of Unified memory and 4 cores (which is why we made the choice for 4 partitions). Results may vary!
 # MAGIC
 # MAGIC We can see that we get the same output from both functions:
 # MAGIC  - **Number of iterations**: 8
